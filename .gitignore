@@ -32,3 +32,9 @@ outputs/
 
 # Logs
 *.log
+
+
+# Generated ML artifacts
+artifacts/
+transcripts/
+*.cache.json
