@@ -9,6 +9,10 @@ DEFAULT_DATASET_ID = (
 )
 
 
+class DatasetDownloadError(RuntimeError):
+    """Raised when an official dataset subset cannot be resolved."""
+
+
 @dataclass(frozen=True, slots=True)
 class DownloadedSubset:
     dataset_root: Path
@@ -20,25 +24,36 @@ def _find_answers_path(
     dataset_root: Path,
     subset: str,
 ) -> Path | None:
-    subset_path = PurePosixPath(subset)
+    subset_path = PurePosixPath(
+        subset
+    )
 
-    parent = dataset_root / subset_path.parent
+    parent = (
+        dataset_root
+        / subset_path.parent
+    )
+
     name = subset_path.name
 
-    exact = parent / f"{name}_answers.json"
+    exact = (
+        parent
+        / f"{name}_answers.json"
+    )
 
     if exact.is_file():
         return exact
 
     candidates = sorted(
-        parent.glob(f"{name}*answers*.json")
+        parent.glob(
+            f"{name}*answers*.json"
+        )
     )
 
     if not candidates:
         return None
 
     if len(candidates) > 1:
-        raise RuntimeError(
+        raise DatasetDownloadError(
             "Multiple possible answer files found: "
             + ", ".join(
                 str(path)
@@ -49,20 +64,82 @@ def _find_answers_path(
     return candidates[0]
 
 
+def resolve_local_subset(
+    *,
+    dataset_root: str | Path,
+    subset: str,
+    require_answers: bool = False,
+) -> DownloadedSubset:
+    """
+    Resolve an already-downloaded subset without making
+    any network request.
+
+    This is intentionally separate from downloading so that
+    Colab experiments can recover cleanly after transient
+    network failures.
+    """
+    root = Path(
+        dataset_root
+    ).expanduser().resolve()
+
+    split_dir = (
+        root
+        / PurePosixPath(subset)
+    )
+
+    if not split_dir.is_dir():
+        raise DatasetDownloadError(
+            f"Dataset subset does not exist locally: "
+            f"{split_dir}"
+        )
+
+    answers_path = (
+        _find_answers_path(
+            root,
+            subset,
+        )
+    )
+
+    if (
+        require_answers
+        and answers_path is None
+    ):
+        raise DatasetDownloadError(
+            f"Answer file was not found for "
+            f"subset {subset!r}"
+        )
+
+    return DownloadedSubset(
+        dataset_root=root,
+        split_dir=split_dir,
+        answers_path=answers_path,
+    )
+
+
 def download_hf_subset(
     *,
     subset: str = "public/pretest",
     destination: str | Path,
     dataset_id: str = DEFAULT_DATASET_ID,
+    max_workers: int = 4,
+    require_answers: bool = False,
 ) -> DownloadedSubset:
     """
-    Download only one subset of the official IOAI dataset.
+    Download exactly one subset of the official IOAI dataset.
 
-    Heavy dependencies are imported lazily so that this module
-    remains importable in the lightweight Mac development
-    environment.
+    The Hugging Face dependency is imported lazily so that this
+    module remains usable in the lightweight local environment.
+
+    Existing partial downloads can be reused by subsequent calls.
     """
-    from huggingface_hub import snapshot_download
+    if max_workers < 1:
+        raise ValueError(
+            "max_workers must be at least 1"
+        )
+
+    from huggingface_hub import (
+        snapshot_download,
+    )
 
     destination_path = Path(
         destination
@@ -73,7 +150,9 @@ def download_hf_subset(
         exist_ok=True,
     )
 
-    subset_path = PurePosixPath(subset)
+    subset_path = PurePosixPath(
+        subset
+    )
 
     answer_pattern = (
         f"{subset_path.parent}/"
@@ -89,23 +168,12 @@ def download_hf_subset(
                 f"{subset}/**",
                 answer_pattern,
             ],
+            max_workers=max_workers,
         )
     )
 
-    split_dir = snapshot_path / subset
-
-    if not split_dir.is_dir():
-        raise FileNotFoundError(
-            f"Downloaded subset not found: {split_dir}"
-        )
-
-    answers_path = _find_answers_path(
-        snapshot_path,
-        subset,
-    )
-
-    return DownloadedSubset(
+    return resolve_local_subset(
         dataset_root=snapshot_path,
-        split_dir=split_dir,
-        answers_path=answers_path,
+        subset=subset,
+        require_answers=require_answers,
     )
